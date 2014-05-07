@@ -58,4 +58,10 @@ public class Semaphore extends java.util.concurrent.Semaphore
       statistics.setMaxWaitCount(getQueueLength());
       return super.tryAcquire(timeout, unit);
    }
+
+   @Override
+   public void release() {
+       super .release();
+   }
+
 }
