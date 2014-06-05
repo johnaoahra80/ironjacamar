@@ -332,8 +332,10 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
                             // destroy the connection.
                             log.destroyingConnectionNotSuccessfullyMatched(clw.getConnectionListener());
 
-                            clw.setCheckedOut(false);
-                            this.checkedOutSize.decrementAndGet();
+                            if(clw.isCheckedOut()){
+                                clw.setCheckedOut(false);
+                                this.checkedOutSize.decrementAndGet();
+                            }
 
                             if (statistics.isEnabled())
                                 statistics.setInUsedCount(this.checkedOutSize.get());
@@ -345,8 +347,10 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
                         {
                             log.throwableWhileTryingMatchManagedConnectionThenDestroyingConnection(clw.getConnectionListener(), t);
 
-                            clw.setCheckedOut(false);
-                            this.checkedOutSize.decrementAndGet();
+                            if(clw.isCheckedOut()){
+                                clw.setCheckedOut(false);
+                                this.checkedOutSize.decrementAndGet();
+                            }
 
                             if (statistics.isEnabled())
                                 statistics.setInUsedCount(this.checkedOutSize.get());
@@ -379,6 +383,11 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
                     // No, the pool was empty, so we have to make a new one.
                     clw = new ConnectionListenerWrapper(createConnectionEventListener(subject, cri), true, true);
 
+                    clw.setCheckedOut(true);
+                    this.checkedOutSize.incrementAndGet();
+
+                    cls.put(clw.getConnectionListener(), clw);
+                    this.poolSize.incrementAndGet();
 
                     if (statistics.isEnabled())
                         statistics.setInUsedCount(this.checkedOutSize.get());
@@ -400,8 +409,10 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
                     // Return permit and rethrow
                     if (clw != null)
                     {
-                        clw.setCheckedOut(false);
-                        this.checkedOutSize.decrementAndGet();
+                        if(clw.isCheckedOut()){
+                            clw.setCheckedOut(false);
+                            this.checkedOutSize.decrementAndGet();
+                        }
 
                         doDestroy(clw);
                     }
@@ -524,10 +535,11 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
             cl.used();
             if (!clq.contains(cl))
             {
-                if(!cls.containsKey(cl))
+                if(!cls.containsKey(cl)){
                     cls.put(cl, new ConnectionListenerWrapper(cl,false,false)); //need to check that this is sane
                     this.poolSize.incrementAndGet();
-                    clq.add(cls.get(cl));
+                }
+                clq.add(cls.get(cl));
             }
             else
             {
@@ -538,9 +550,11 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
         if(clw != null){
             synchronized (clw){
                 clw.setHasPermit(false);
-                clw.setCheckedOut(false);
+                if(clw.isCheckedOut()){
+                    clw.setCheckedOut(false);
+                    this.checkedOutSize.decrementAndGet();
+                }
             }
-            this.checkedOutSize.decrementAndGet();
             permits.release();
         }
 
@@ -588,8 +602,10 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
 
                 // Mark checked out connections as requiring destruction
                 for(ConnectionListener cl : this.cls.keySet()){
-                    cls.get(cl).setCheckedOut(false);
-                    this.checkedOutSize.decrementAndGet();
+                    if(cls.get(cl).isCheckedOut()){
+                        cls.get(cl).setCheckedOut(false);
+                        this.checkedOutSize.decrementAndGet();
+                    }
                     if(cls.get(cl).hasPermit){
                         cls.get(cl).setHasPermit(false);
                     }
@@ -604,6 +620,10 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
                         destroy = new ArrayList<ConnectionListenerWrapper>(1);
 
                     destroy.add(cls.get(cl));
+
+                    clq.remove(cls.get(cl));
+                    cls.remove(cl);
+                    this.poolSize.decrementAndGet();
                 }
 
 
@@ -616,6 +636,9 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
             while(clwIter.hasNext()){
                 ConnectionListenerWrapper clw = clwIter.next();
                 clq.remove(clw);
+                cls.remove(clw.getConnectionListener());
+                this.poolSize.decrementAndGet();
+
                 if (destroy == null)
                     destroy = new ArrayList<ConnectionListenerWrapper>(1);
 
@@ -655,35 +678,31 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
         ArrayList<ConnectionListenerWrapper> destroy = null;
         long timeout = System.currentTimeMillis() - (poolConfiguration.getIdleTimeoutMinutes() * 1000L * 60);
 
-        outerloop:
-        while (true)
-        {
-            // Nothing left to destroy
-            if (clq.size() == 0)
+        Iterator<ConnectionListenerWrapper> clwIter = clq.iterator();
+        while(clwIter.hasNext()){
+            ConnectionListenerWrapper clw = clwIter.next();
+
+            if (clw.getConnectionListener().isTimedOut(timeout) && shouldRemove())
+            {
+                if (statistics.isEnabled())
+                    statistics.deltaTimedOut();
+
+                // We need to destroy this one
+                if(cls.remove(clw.getConnectionListener())!=null){
+                    this.poolSize.decrementAndGet();
+                } else {
+                    log.trace("Connection Pool did not contain: " + clw.getConnectionListener());
+                }
+
+                if (destroy == null)
+                    destroy = new ArrayList<ConnectionListenerWrapper>(1);
+
+                destroy.add(clw);
+            }
+            else
+            {
+                // They were inserted chronologically, so if this one isn't timed out, following ones won't be either.
                 break;
-
-            Iterator<ConnectionListenerWrapper> clwIter = clq.iterator();
-            while(clwIter.hasNext()){
-                ConnectionListenerWrapper clw = clwIter.next();
-
-                if (clw.getConnectionListener().isTimedOut(timeout) && shouldRemove())
-                {
-                    if (statistics.isEnabled())
-                        statistics.deltaTimedOut();
-
-                    // We need to destroy this one
-                    clq.remove(0);
-
-                    if (destroy == null)
-                        destroy = new ArrayList<ConnectionListenerWrapper>(1);
-
-                    destroy.add(clw);
-                }
-                else
-                {
-                    // They were inserted chronologically, so if this one isn't timed out, following ones won't be either.
-                    break outerloop;
-                }
             }
         }
 
@@ -798,15 +817,16 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
                         {
                             ConnectionListener cl = createConnectionEventListener(defaultSubject, defaultCri);
 
-                                if (trace)
-                                    log.trace("Filling pool cl=" + cl);
+                            if (trace)
+                                log.trace("Filling pool cl=" + cl);
 
-                                cls.put(cl, new ConnectionListenerWrapper(cl,false,false));
-                                this.poolSize.incrementAndGet();
-                                clq.add(cls.get(cl));
+                            cls.put(cl, new ConnectionListenerWrapper(cl,false,false));
+                            this.poolSize.incrementAndGet();
+                            clq.add(cls.get(cl));
 
-                                if (statistics.isEnabled())
-                                    statistics.setInUsedCount(this.checkedOutSize.get() + 1);
+
+                            if (statistics.isEnabled())
+                                statistics.setInUsedCount(this.checkedOutSize.get() + 1);
                         }
                         catch (ResourceException re)
                         {
@@ -881,32 +901,36 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
      */
     private void doDestroy(ConnectionListenerWrapper clw)
     {
-        if (clw.getConnectionListener().getState() == ConnectionState.DESTROYED)
-        {
-            if (trace)
-                log.trace("ManagedConnection is already destroyed " + clw.getConnectionListener());
+        if(clw!=null){
+            if(clw.getConnectionListener() != null){
+                if (clw.getConnectionListener().getState() == ConnectionState.DESTROYED)
+                {
+                    if (trace)
+                        log.trace("ManagedConnection is already destroyed " + clw.getConnectionListener());
 
-            return;
+                    return;
+                }
+
+                if (statistics.isEnabled())
+                    statistics.deltaDestroyedCount();
+                clw.getConnectionListener().setState(ConnectionState.DESTROYED);
+
+                ManagedConnection mc = clw.getConnectionListener().getManagedConnection();
+                try
+                {
+                    mc.destroy();
+                }
+                catch (Throwable t)
+                {
+                    log.debug("Exception destroying ManagedConnection " + clw.getConnectionListener(), t);
+                }
+
+                mc.removeConnectionEventListener(clw.getConnectionListener());
+
+                clw.setConnectionListener(null);
+
+            }
         }
-
-        if (statistics.isEnabled())
-            statistics.deltaDestroyedCount();
-        clw.getConnectionListener().setState(ConnectionState.DESTROYED);
-
-        ManagedConnection mc = clw.getConnectionListener().getManagedConnection();
-        try
-        {
-            mc.destroy();
-        }
-        catch (Throwable t)
-        {
-            log.debug("Exception destroying ManagedConnection " + clw.getConnectionListener(), t);
-        }
-
-        mc.removeConnectionEventListener(clw.getConnectionListener());
-
-        if(cls.remove(clw)!=null)
-            this.poolSize.decrementAndGet();
     }
 
     /**
@@ -977,7 +1001,7 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
                             {
                                 if (cl.getState() != ConnectionState.DESTROY)
                                 {
-                                    ConnectionListenerWrapper clw = cls.get(cl);
+                                    ConnectionListenerWrapper clw = cls.remove(cl);
                                     doDestroy(clw);
                                     clw = null;
                                     destroyed = true;
@@ -1046,7 +1070,10 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
             }
         }
 
-        return clw.getConnectionListener();
+        if(clw!=null)
+            return clw.getConnectionListener();
+        else
+            return null;
     }
 
     /**
@@ -1077,7 +1104,7 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
         return sb.toString();
     }
 
-    private class ConnectionListenerWrapper {
+    class ConnectionListenerWrapper {
         private ConnectionListener connectionListener;
         private boolean checkedOut;
         private boolean hasPermit;
@@ -1122,4 +1149,3 @@ public class NonBlockingManagedConnectionPool implements ManagedConnectionPool
         }
     }
 }
-
