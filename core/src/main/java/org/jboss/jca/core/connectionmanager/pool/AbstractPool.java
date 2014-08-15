@@ -230,7 +230,7 @@ public abstract class AbstractPool implements Pool
     * Init lock
     * @return The lock
     */
-   private synchronized Lock initLock()
+   private Lock initLock()
    {
       TransactionSynchronizationRegistry tsr = getTransactionSynchronizationRegistry();
       if (tsr != null && tsr.getTransactionKey() != null)
