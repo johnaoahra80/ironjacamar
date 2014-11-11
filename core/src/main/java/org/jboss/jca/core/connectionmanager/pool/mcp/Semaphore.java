@@ -22,7 +22,12 @@
 
 package org.jboss.jca.core.connectionmanager.pool.mcp;
 
+import org.jboss.jca.core.CoreLogger;
+import org.jboss.jca.core.connectionmanager.listener.ConnectionListener;
+
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Logger;
 
 /**
  * A semaphore implementation that supports statistics
@@ -31,22 +36,44 @@ import java.util.concurrent.TimeUnit;
  */
 public class Semaphore extends java.util.concurrent.Semaphore
 {
-   /** Serial version uid */
+    /** The log */
+//    private CoreLogger log;
+    private Logger log = Logger.getLogger(Semaphore.class.getName());
+
+    /** Serial version uid */
    private static final long serialVersionUID = 1L;
 
    /** Statistics */
    private ManagedConnectionPoolStatisticsImpl statistics;
 
-   /**
+   private Map<ConnectionListener, SemaphoreConcurrentLinkedQueueManagedConnectionPool.ConnectionListenerWrapper> cls;
+
+    private static String poolName;
+
+    private static int maxSize;
+
+    private static char[] msg_1 = "Semaphore stats - (".toCharArray();
+    private static char[] msg_2 = "); QueueLength: ".toCharArray();
+    private static char[] msg_3 = "; AvailablePermits: ".toCharArray();
+    private static char[] msg_4 = "; clsAquired: ".toCharArray();
+    private static char[] msg_5 = ";".toCharArray();
+
+    /**
     * Constructor
     * @param maxSize The maxumum size
     * @param fairness The fairness
     * @param statistics The statistics module
     */
+//   public Semaphore(int maxSize, boolean fairness, ManagedConnectionPoolStatisticsImpl statistics,
+//                    Map<ConnectionListener, SemaphoreConcurrentLinkedQueueManagedConnectionPool.ConnectionListenerWrapper> cls, CoreLogger log, String poolName)
    public Semaphore(int maxSize, boolean fairness, ManagedConnectionPoolStatisticsImpl statistics)
    {
       super(maxSize, fairness);
+       this.maxSize = maxSize;
       this.statistics = statistics;
+//       this.cls = cls;
+//       this.poolName = poolName;
+//       this.log = log;
    }
 
    /**
@@ -56,6 +83,30 @@ public class Semaphore extends java.util.concurrent.Semaphore
    public boolean tryAcquire(long timeout, TimeUnit unit) throws InterruptedException
    {
       statistics.setMaxWaitCount(getQueueLength());
+//      if (this.cls!=null && log != null) {
+//          int i = 0;
+//          for(Map.Entry<ConnectionListener, SemaphoreConcurrentLinkedQueueManagedConnectionPool.ConnectionListenerWrapper> clw: cls.entrySet()){
+//              if(clw.getValue().hasPermit()) i++;
+//          }
+//          int curSize = super.availablePermits() + i;
+//          if( curSize > this.maxSize) logSemphStats(i);
+//      }
       return super.tryAcquire(timeout, unit);
    }
+
+    private void logSemphStats(int permits) {
+        StringBuilder sempLog = new StringBuilder();
+        sempLog.append(msg_1);
+        sempLog.append(this.poolName);
+        sempLog.append(msg_2);
+        sempLog.append(super.getQueueLength());
+        sempLog.append(msg_3);
+        sempLog.append(super.availablePermits());
+        sempLog.append(msg_4);
+        sempLog.append(permits);
+        sempLog.append(msg_5);
+
+        log.warning(sempLog.toString());
+    }
+
 }

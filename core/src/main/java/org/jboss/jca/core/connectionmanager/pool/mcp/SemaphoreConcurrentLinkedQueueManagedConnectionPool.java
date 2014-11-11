@@ -45,6 +45,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 import javax.resource.ResourceException;
 import javax.resource.spi.ConnectionRequestInfo;
@@ -157,7 +158,8 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
       this.cls = new ConcurrentHashMap<ConnectionListener, ConnectionListenerWrapper>();
       this.statistics = new ManagedConnectionPoolStatisticsImpl(maxSize);
       this.statistics.setEnabled(p.getStatistics().isEnabled());
-      this.permits = new Semaphore(maxSize, true, statistics);
+      this.permits = new Semaphore(maxSize, false, statistics);
+//      this.permits = new Semaphore(maxSize, true, statistics, this.cls, log, pool.getName());
       this.poolSize.set(0);
       this.checkedOutSize.set(0);
 
@@ -477,8 +479,12 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
 
          if (clw != null && clw.hasPermit())
          {
-            clw.setHasPermit(false);
-            permits.release();
+             try {
+                 clw.setHasPermit(false);
+             } catch (InterruptedException e) {
+                 e.printStackTrace();
+             }
+             permits.release();
          }
 
          return;
@@ -534,13 +540,21 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
       {
          if (clw.hasPermit())
          {
-            clw.setHasPermit(false);
-            permits.release();
+             try {
+                 clw.setHasPermit(false);
+             } catch (InterruptedException e) {
+                 e.printStackTrace();
+             }
+             permits.release();
          }
          if (clw.isCheckedOut())
          {
-            clw.setCheckedOut(false);
-            checkedOutSize.decrementAndGet();
+             try {
+                 clw.setCheckedOut(false);
+             } catch (InterruptedException e) {
+                 e.printStackTrace();
+             }
+             checkedOutSize.decrementAndGet();
          }
       }
 
@@ -595,13 +609,21 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
                   if (trace)
                      log.trace("Flush marking checked out connection for destruction " + entry.getKey());
 
-                  entry.getValue().setCheckedOut(false);
-                  checkedOutSize.decrementAndGet();
+                   try {
+                       entry.getValue().setCheckedOut(false);
+                   } catch (InterruptedException e) {
+                       e.printStackTrace();
+                   }
+                   checkedOutSize.decrementAndGet();
 
                   if (entry.getValue().hasPermit())
                   {
-                     entry.getValue().setHasPermit(false);
-                     permits.release();
+                      try {
+                          entry.getValue().setHasPermit(false);
+                      } catch (InterruptedException e) {
+                          e.printStackTrace();
+                      }
+                      permits.release();
                   }
 
                   entry.getKey().setState(ConnectionState.DESTROY);
@@ -929,7 +951,11 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
 
             mc.removeConnectionEventListener(clw.getConnectionListener());
 
-            clw.setConnectionListener(null);
+             try {
+                 clw.setConnectionListener(null);
+             } catch (InterruptedException e) {
+                 e.printStackTrace();
+             }
 
          }
       }
@@ -1128,8 +1154,12 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
          //update counter and statistics
          if (clw.isCheckedOut())
          {
-            clw.setCheckedOut(false);
-            checkedOutSize.decrementAndGet();
+             try {
+                 clw.setCheckedOut(false);
+             } catch (InterruptedException e) {
+                 e.printStackTrace();
+             }
+             checkedOutSize.decrementAndGet();
 
             if (statistics.isEnabled())
                statistics.setInUsedCount(checkedOutSize.get());
@@ -1164,9 +1194,11 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
    static class ConnectionListenerWrapper
    {
 
-      private ConnectionListener connectionListener;
-      private boolean checkedOut;
-      private boolean hasPermit;
+      private volatile ConnectionListener connectionListener;
+      private volatile boolean checkedOut;
+      private volatile boolean hasPermit;
+
+      private final ReentrantLock modLock = new ReentrantLock(false);
 
       /**
        * Constructor
@@ -1218,9 +1250,14 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
        *
        * @param connectionListener wrapped Connection Listener
        */
-      public void setConnectionListener(ConnectionListener connectionListener)
-      {
-         this.connectionListener = connectionListener;
+      public void setConnectionListener(ConnectionListener connectionListener) throws InterruptedException {
+          modLock.lock();
+          if (Thread.interrupted()) throw new InterruptedException();
+          try {
+              this.connectionListener = connectionListener;
+          } finally {
+              modLock.unlock();
+          }
       }
 
       /**
@@ -1238,9 +1275,14 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
        *
        * @param checkedOut is connection listener checked out
        */
-      public void setCheckedOut(boolean checkedOut)
-      {
-         this.checkedOut = checkedOut;
+      public void setCheckedOut(boolean checkedOut) throws InterruptedException {
+          modLock.lock();
+          if (Thread.interrupted()) throw new InterruptedException();
+          try {
+              this.checkedOut = checkedOut;
+          } finally {
+              modLock.unlock();
+          }
       }
 
       /**
@@ -1258,9 +1300,14 @@ public class SemaphoreConcurrentLinkedQueueManagedConnectionPool implements Mana
        *
        * @param hasPermit does connection listener have a permit
        */
-      public void setHasPermit(boolean hasPermit)
-      {
+      public void setHasPermit(boolean hasPermit) throws InterruptedException {
+          modLock.lock();
+          if (Thread.interrupted()) throw new InterruptedException();
+          try {
          this.hasPermit = hasPermit;
+          } finally {
+              modLock.unlock();
+          }
       }
    }
 }
